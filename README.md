@@ -13,7 +13,7 @@ context. Nothing leaves your machine; no paid services.
 ```
 second-brain/
   config.yaml           # all settings (model, chunk size, dirs)
-  people.yaml           # roster of colleagues (menubar picker + Claude context)
+  people.example.yaml   # roster template (copy to people.yaml; people.yaml is gitignored)
   requirements.txt
   setup.sh              # one-time install
   secondbrain/          # the package
@@ -40,16 +40,37 @@ second-brain/
 ## Setup (one time)
 
 ```bash
-cd ~/second-brain
+git clone git@github.com:Madhur6869/2b.git second-brain
+cd second-brain
 ./setup.sh
 ```
 
-This creates `.venv`, installs everything, and pre-downloads the Whisper + embedding models.
+`setup.sh` creates `.venv`, installs everything, and pre-downloads the Whisper +
+embedding models. The private data dirs (`conversations/`, `audio/`, `index/`,
+`topics/`) are gitignored and created automatically on first run.
 
 Then:
-1. Edit **`people.yaml`** with the people you talk to.
-2. Grant your terminal (and/or Python) **Microphone** access:
+
+1. **Roster** — copy the template and fill in the people you talk to:
+   ```bash
+   cp people.example.yaml people.yaml   # people.yaml is gitignored (real names)
+   ```
+2. **HuggingFace token** (for speaker diarization) — put a token in `.hf_token`, and
+   accept the model terms at
+   <https://huggingface.co/pyannote/speaker-diarization-community-1>:
+   ```bash
+   echo "hf_xxxxxxxx" > .hf_token         # gitignored
+   ```
+   To skip diarization instead, set `diarize.enabled: false` in `config.yaml`.
+3. **Optional integrations** — only if you enable them in `config.yaml`: Gmail sync needs
+   an app password per account in `.gmail_work_app_password` / `.gmail_github_app_password`,
+   and Notion sync needs `.notion_token`. All `.*token` / `*app_password*` files are
+   gitignored.
+4. **Microphone access** — grant your terminal (and/or Python)
    System Settings → Privacy & Security → Microphone.
+
+> Secrets and private data never get committed — see `.gitignore`. Only the system
+> code and `people.example.yaml` live in the repo.
 
 ## Daily use
 
