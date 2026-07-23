@@ -1,0 +1,66 @@
+# Second Brain configuration. Edit values here; code reads them via secondbrain/config.py.
+
+# Directory names (relative to the second-brain root)
+audio_dir: audio
+conversations_dir: conversations
+index_dir: index
+
+capture:
+  sample_rate: 16000   # OUTPUT rate: audio is captured at the mic's native rate
+                       # (CoreAudio's rule) then downsampled to this on save. Whisper
+                       # wants 16 kHz mono; keeps files small regardless of input device.
+  channels: 1
+
+whisper:
+  backend: mlx         # mlx = Apple GPU (fast, Apple Silicon) | faster-whisper = CPU
+  model: large-v3-turbo  # fast + accurate on Apple GPU. (faster-whisper: use medium/large-v3)
+  compute_type: int8   # int8 is fast + light on Apple Silicon CPU (faster-whisper only)
+  language: null       # null = auto-detect; set "en" to force English
+
+embeddings:
+  model: BAAI/bge-small-en-v1.5   # fastembed model (384-dim, CPU, no torch)
+  chunk_size: 900                 # characters per chunk
+  chunk_overlap: 150
+
+mcp:
+  default_k: 5         # default number of search results returned to Claude
+
+diarize:
+  # Speaker diarization (who-said-what) via pyannote. Needs a HuggingFace token in
+  # .hf_token AND acceptance of the model terms on huggingface.co.
+  enabled: true
+  # pyannote.audio 4.x ships this self-contained pipeline (bundles segmentation +
+  # embedding). Accept its terms at huggingface.co/pyannote/speaker-diarization-community-1
+  model: pyannote/speaker-diarization-community-1
+
+gmail:
+  # Multi-account ingestion via IMAP + app passwords. Each account has its own
+  # secret file and Gmail-search query (matched via IMAP X-GM-RAW). `distill: true`
+  # routes matches through the claude distiller (rich content); false = index-only.
+  enabled: true
+  accounts:
+    - name: work
+      address: ""                       # <-- your work Google address
+      secret_file: .gmail_work_app_password
+      query: 'from:(gemini) OR subject:("Notes by Gemini") OR ("took notes" gemini)'  # refined after first connect
+      distill: true
+      newer_than_days: 30
+    - name: github
+      address: ""                       # <-- your github Google address
+      secret_file: .gmail_github_app_password
+      query: 'from:notifications@github.com'
+      distill: false                    # index-only; GH notifications are structured & high-volume
+      newer_than_days: 14
+
+notion:
+  enabled: true
+  secret_file: .notion_token
+  parent_page: ""       # URL/ID of the Notion page you shared with the integration
+  database_id: ""       # auto-filled after the first sync creates the To-Do database
+
+distill:
+  # Distillation runs via the `claude` CLI headless mode, using your Claude
+  # subscription (no API key / no metered billing). Leave claude_bin empty to
+  # auto-detect the CLI on PATH; set an absolute path if launchd can't find it.
+  claude_bin: ""
+  poll_seconds: 900    # how often the launchd job scans for new transcripts

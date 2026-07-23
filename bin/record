@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from secondbrain import config, util
+from secondbrain.capture import record_until_interrupt
+
+
+def main() -> None:
+    audio_path = config.AUDIO_DIR / (util.stamp(util.now()) + ".wav")
+    started = util.now()
+
+    record_until_interrupt(audio_path)
+
+    title = input("Title: ").strip()
+    participants_raw = input("Participants (comma-separated): ")
+    participants = [p.strip() for p in participants_raw.split(",") if p.strip()]
+
+    from secondbrain.ingest import ingest
+
+    md_path = ingest(audio_path, title, participants, started)
+    print(md_path)
+
+
+if __name__ == "__main__":
+    main()

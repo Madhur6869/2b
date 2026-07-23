@@ -1,0 +1,18 @@
+# Roster of people you talk to. The menubar "People" submenu is built from this list,
+# and entries double as context so Claude knows who these people are (role/team).
+# Add entries freely. `aliases` are alternate names that may appear in transcripts.
+#
+# Copy this file to people.yaml and fill in your real roster. people.yaml is
+# gitignored (it contains real names) — this template is what lives in the repo.
+
+- name: "Ada Lovelace"
+  role: "Software engineer, same team as you"
+  aliases: [ada]
+
+- name: "Grace Hopper"
+  role: "Software engineer — also mechanical & electrical"
+  aliases: [grace]
+
+- name: "Alan Turing"
+  role: "CEO — involved across everything (product, strategy, engineering)"
+  aliases: [alan]

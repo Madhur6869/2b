@@ -1,0 +1,18 @@
+# Core (capture + transcribe + store)
+sounddevice
+soundfile
+numpy
+pyyaml
+faster-whisper
+
+# Retrieval (embeddings + vector index)
+fastembed
+lancedb
+pyarrow
+
+# MCP server (Claude integration)
+mcp
+
+# Menubar app (macOS only)
+rumps
+pyannote.audio

@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+import sys
+import argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from datetime import datetime
+
+from secondbrain import util
+from secondbrain.ingest import ingest
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Re-ingest an existing WAV: transcribe, store, and index it."
+    )
+    parser.add_argument("audio_path", help="Path to the audio (WAV) file")
+    parser.add_argument("--title", default="", help="Conversation title")
+    parser.add_argument(
+        "--participants",
+        default="",
+        help="Comma-separated participant names",
+    )
+    parser.add_argument(
+        "--at",
+        default=None,
+        help="ISO start time (default: now)",
+    )
+    args = parser.parse_args()
+
+    participants = [p.strip() for p in args.participants.split(",") if p.strip()]
+    started_at = datetime.fromisoformat(args.at) if args.at else util.now()
+
+    md_path = ingest(Path(args.audio_path), args.title, participants, started_at)
+    print(md_path)
+
+
+if __name__ == "__main__":
+    main()

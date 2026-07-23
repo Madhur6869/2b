@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""CLI: semantic search over the Second Brain conversation index."""
+import sys
+import argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from secondbrain import config, index, search
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Semantic search over captured conversations."
+    )
+    parser.add_argument("query", nargs="+", help="search query")
+    parser.add_argument(
+        "-k",
+        "--k",
+        type=int,
+        default=config.MCP_DEFAULT_K,
+        help="number of results to return",
+    )
+    args = parser.parse_args()
+
+    query = " ".join(args.query)
+    results = index.search(query, k=args.k)
+    print(search.format_results(results))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Pull configured Gmail accounts' matching messages into the brain."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from secondbrain.gmail_sync import sync_all
+
+if __name__ == "__main__":
+    n = sync_all()
+    print(f"gmail sync complete: {n} new message(s)")

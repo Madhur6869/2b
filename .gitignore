@@ -1,0 +1,31 @@
+# ── Secrets — never commit ─────────────────────────────────────────────
+.hf_token
+.secrets.env
+.notion_token
+.gmail_*
+*app_password*
+*.pem
+*.key
+*.token
+
+# ── Private roster (real names) — commit people.example.yaml instead ────
+people.yaml
+
+# ── Private data — recordings, transcripts, distilled notes, embeddings ─
+audio/
+conversations/
+topics/
+index/
+
+# ── Local environment & generated logs ─────────────────────────────────
+.venv/
+*.log
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ── macOS ──────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store

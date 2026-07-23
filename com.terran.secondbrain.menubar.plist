@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.terran.secondbrain.menubar</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/madhur/second-brain/.venv/bin/python</string>
+    <string>/Users/madhur/second-brain/bin/menubar</string>
+  </array>
+  <!-- Start at login and keep it alive: relaunch if it ever exits/crashes.
+       Sleep / lid-close does NOT exit the process, so it simply resumes on wake. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>WorkingDirectory</key>
+  <string>/Users/madhur/second-brain</string>
+  <key>StandardOutPath</key>
+  <string>/Users/madhur/second-brain/menubar.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/madhur/second-brain/menubar.log</string>
+</dict>
+</plist>
