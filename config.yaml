@@ -32,6 +32,11 @@ diarize:
   # pyannote.audio 4.x ships this self-contained pipeline (bundles segmentation +
   # embedding). Accept its terms at huggingface.co/pyannote/speaker-diarization-community-1
   model: pyannote/speaker-diarization-community-1
+  # Torch device: auto = Apple GPU (mps) when available, else cpu. Whisper already
+  # runs on the GPU via MLX; left on cpu, diarization dominates ingest time on long
+  # recordings (~4 cores pegged for the length of the audio). Set "cpu" to force the
+  # old behaviour if MPS results ever look wrong.
+  device: auto
 
 gmail:
   # Multi-account ingestion via IMAP + app passwords. Each account has its own

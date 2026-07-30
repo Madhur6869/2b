@@ -67,7 +67,14 @@ NOTION_PARENT_PAGE = _notion.get("parent_page", "") or ""
 _diar = _cfg.get("diarize", {})
 DIARIZE_ENABLED = bool(_diar.get("enabled", False))
 DIARIZE_MODEL = _diar.get("model", "pyannote/speaker-diarization-3.1")
+DIARIZE_DEVICE = str(_diar.get("device", "auto")).lower()
 HF_TOKEN_PATH = ROOT / ".hf_token"
+
+# pyannote on MPS can hit ops Metal doesn't implement. This lets those individual
+# ops fall back to CPU instead of raising, so we keep the GPU for everything else.
+# Must be set before torch dispatches its first op — config is imported first
+# everywhere, so this is the earliest reliable place.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 # --- distill ---
 _CLAUDE_BIN_CFG = _cfg.get("distill", {}).get("claude_bin", "") or ""

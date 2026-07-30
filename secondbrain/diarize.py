@@ -12,10 +12,30 @@ from pathlib import Path
 from secondbrain import config
 
 _PIPELINE = None
+_PIPELINE_DEVICE = "cpu"  # device the loaded pipeline actually sits on
+
+
+def _resolve_device():
+    """Torch device for pyannote, from config.DIARIZE_DEVICE.
+
+    'auto' prefers the Apple GPU (mps) and falls back to cpu. Transcription already
+    runs on the GPU via MLX; pyannote is plain torch and stays on CPU unless moved
+    explicitly, which makes it the slowest leg of ingest on long recordings.
+    """
+    import torch
+
+    want = config.DIARIZE_DEVICE or "auto"
+    if want in ("auto", "mps"):
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        if want == "mps":
+            print("[diarize] WARNING: device=mps requested but MPS is unavailable; using cpu.")
+        return torch.device("cpu")
+    return torch.device(want)
 
 
 def _get_pipeline():
-    global _PIPELINE
+    global _PIPELINE, _PIPELINE_DEVICE
     if _PIPELINE is None:
         from pyannote.audio import Pipeline
 
@@ -32,6 +52,15 @@ def _get_pipeline():
                 f"model's terms at https://huggingface.co/{config.DIARIZE_MODEL} with the "
                 f"same account as your token."
             )
+        device = _resolve_device()
+        if device.type != "cpu":
+            try:
+                pipe.to(device)
+                _PIPELINE_DEVICE = device.type
+                print(f"[diarize] pipeline on {device.type}")
+            except Exception as exc:
+                print(f"[diarize] WARNING: could not move pipeline to {device.type} "
+                      f"({type(exc).__name__}: {exc}); staying on cpu.")
         _PIPELINE = pipe
     return _PIPELINE
 
@@ -42,13 +71,31 @@ def diarize(audio_path: Path, num_speakers: int | None = None) -> list[dict]:
     Pass num_speakers (e.g. the known participant count) to guide clustering — on
     far-field mono audio the pipeline otherwise under-counts similar voices.
     """
+    global _PIPELINE_DEVICE
     pipeline = _get_pipeline()
     print(f"[diarize] diarizing {Path(audio_path).name}"
           f"{f' (num_speakers={num_speakers})' if num_speakers else ''}...")
-    if num_speakers and num_speakers > 1:
-        annotation = pipeline(str(audio_path), num_speakers=num_speakers)
-    else:
-        annotation = pipeline(str(audio_path))
+
+    def _run(pipe):
+        if num_speakers and num_speakers > 1:
+            return pipe(str(audio_path), num_speakers=num_speakers)
+        return pipe(str(audio_path))
+
+    try:
+        annotation = _run(pipeline)
+    except Exception as exc:
+        # Metal doesn't implement every op pyannote uses. Losing speaker labels
+        # outright is worse than a slow run, so retry on CPU — loudly, and pin the
+        # pipeline there so the rest of this process doesn't pay the failure twice.
+        import torch
+
+        if _PIPELINE_DEVICE == "cpu":
+            raise  # already on CPU — this is a real failure, not an op-coverage gap
+        print(f"[diarize] WARNING: {_PIPELINE_DEVICE} diarization failed "
+              f"({type(exc).__name__}: {exc}). Retrying on cpu.")
+        pipeline.to(torch.device("cpu"))
+        _PIPELINE_DEVICE = "cpu"
+        annotation = _run(pipeline)
     # pyannote 4.x wraps the result in a DiarizeOutput; unwrap to the Annotation
     # (which exposes itertracks). 3.x already returns the Annotation directly.
     if hasattr(annotation, "speaker_diarization"):
