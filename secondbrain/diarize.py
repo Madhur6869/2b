@@ -24,7 +24,10 @@ def _resolve_device():
     """
     import torch
 
-    want = config.DIARIZE_DEVICE or "auto"
+    # getattr, not attribute access: a long-running process (the menubar) may hold a
+    # config module imported before this setting existed. Throwing there would kill
+    # diarization entirely and ingest.py would silently save an unlabelled transcript.
+    want = getattr(config, "DIARIZE_DEVICE", "auto") or "auto"
     if want in ("auto", "mps"):
         if torch.backends.mps.is_available():
             return torch.device("mps")
