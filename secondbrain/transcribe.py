@@ -37,6 +37,11 @@ def _transcribe_mlx(audio_path: Path) -> dict:
         str(audio_path),
         path_or_hf_repo=repo,
         language=config.WHISPER_LANGUAGE,
+        # Whisper defaults this to True, which feeds each window's output back in as
+        # the next window's prompt. On noisy crosstalk that collapses into stuck
+        # repetition loops ("Or if it's in two" x30) and long runs of bare
+        # punctuation. The faster-whisper path already disables it; match it here.
+        condition_on_previous_text=False,
     )
     segments = [
         {"start": float(s["start"]), "end": float(s["end"]), "text": s["text"].strip()}
