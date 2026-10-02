@@ -1,5 +1,4 @@
 # Core (capture + transcribe + store)
-sounddevice
 soundfile
 numpy
 pyyaml

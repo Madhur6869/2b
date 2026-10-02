@@ -10,6 +10,20 @@ capture:
                        # (CoreAudio's rule) then downsampled to this on save. Whisper
                        # wants 16 kHz mono; keeps files small regardless of input device.
   channels: 1
+  # Which mic. auto = the default input, unless that is a Bluetooth headset (AirPods):
+  # then the built-in mic, which hears the whole room and doesn't drop out or knock the
+  # headset into call-quality audio. default = always the default input.
+  mic: auto
+  # Also record the Mac's audio OUTPUT and mix it in: the other side of a call you hear
+  # in AirPods, which no mic can pick up. Uses the audiotap helper (audiotap/build.sh) and
+  # needs System Settings > Privacy & Security > Screen & System Audio Recording >
+  # "System Audio Recording Only" for Python.
+  system_audio: true
+  # Apps whose audio is left out (bundle ids), so music doesn't land in transcripts.
+  # Only apps already running when recording starts can be excluded.
+  system_audio_exclude:
+    - com.spotify.client
+    - com.apple.Music
 
 whisper:
   backend: mlx         # mlx = Apple GPU (fast, Apple Silicon) | faster-whisper = CPU

@@ -1,6 +1,6 @@
 """macOS menubar app for the Second Brain.
 
-Records microphone audio, tags participants from the People roster, and hands
+Records the mic plus system audio, tags participants from the People roster, and hands
 the WAV to the ingest pipeline (transcribe -> store -> index).
 
 Fail-hard philosophy adapted for a long-running UI: recording/ingest actions
@@ -92,6 +92,17 @@ class SecondBrainApp(rumps.App):
     def _tick(self, _):
         if self.recorder is None or not self.recorder.is_recording:
             return
+        failure = self.recorder.failure
+        if failure:
+            # Capture died: save what we have and say so now, rather than keep showing
+            # REC over a recording that has stopped.
+            self._stop_recording()
+            rumps.alert(
+                "Second Brain — recording stopped",
+                f"Audio capture stopped unexpectedly:\n{failure}\n\n"
+                "What was captured is being saved. Start a new recording to continue.",
+            )
+            return
         seconds = int(self.recorder.elapsed())
         m, s = divmod(seconds, 60)
         self.title = f"REC {m}:{s:02d}"
@@ -106,7 +117,7 @@ class SecondBrainApp(rumps.App):
             self._timer = None
 
         try:
-            audio_path = self.recorder.stop()
+            self.recorder.stop()
         except Exception as exc:
             rumps.alert("Second Brain", f"Failed to stop recording:\n{exc}")
             traceback.print_exc()
@@ -119,24 +130,22 @@ class SecondBrainApp(rumps.App):
         self.title = IDLE_TITLE
         self.status_item.title = "Processing…"
         self.record_item.title = "Start Recording"
-        had_dropout = self.recorder.had_dropout
-        dropout_message = self.recorder.dropout_message
-        self.recorder = None
-
-        # Warn loudly if the mic dropped out mid-recording (don't silently save junk).
-        if had_dropout:
-            rumps.alert("Second Brain — audio dropout", dropout_message)
-
+        recorder, self.recorder = self.recorder, None
         started_at = self.started_at
 
         # No title/people prompt — save immediately. The timestamp id names the file and
         # the distiller sets a title from the content. Participants are added afterward
         # (the user tells us who was there and we relabel/re-distill).
-        self._ingest_async(audio_path, "", [], started_at)
+        self._ingest_async(recorder, "", [], started_at)
 
-    def _ingest_async(self, audio_path, title, participants, started_at):
+    def _ingest_async(self, recorder, title, participants, started_at):
         def worker():
             try:
+                # Mixing + echo removal take seconds per hour of audio: off the UI thread.
+                audio_path = recorder.finish()
+                if recorder.warnings:
+                    # Warn loudly if a source dropped out (don't silently save junk).
+                    _on_main(rumps.alert, "Second Brain — audio problem", "\n\n".join(recorder.warnings))
                 md_path = ingest(audio_path, title, participants, started_at)
             except Exception as exc:
                 # AppKit UI (alerts/notifications/menu edits) MUST run on the main

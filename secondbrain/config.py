@@ -37,6 +37,10 @@ for _d in (AUDIO_DIR, CONVERSATIONS_DIR, INDEX_DIR):
 # --- capture ---
 SAMPLE_RATE = int(_cfg["capture"]["sample_rate"])
 CHANNELS = int(_cfg["capture"]["channels"])
+MIC = _cfg["capture"]["mic"]
+SYSTEM_AUDIO = bool(_cfg["capture"]["system_audio"])
+SYSTEM_AUDIO_EXCLUDE = list(_cfg["capture"]["system_audio_exclude"] or [])
+AUDIOTAP_BIN = ROOT / "audiotap" / "audiotap"  # built by audiotap/build.sh
 
 # --- whisper ---
 WHISPER_BACKEND = _cfg["whisper"].get("backend", "faster-whisper")

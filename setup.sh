@@ -34,10 +34,14 @@ list(emb.embed(["warmup"]))
 print("embedding model ready")
 PY
 
+echo "==> Building the audiotap helper (records the mic + system audio, e.g. calls in AirPods)"
+./audiotap/build.sh
+
 echo ""
 echo "Setup complete. Next:"
 echo "  1. Edit people.yaml with your colleagues."
 echo "  2. Grant your terminal Microphone access: System Settings > Privacy & Security > Microphone."
+echo "     The first recording also asks to record system audio — allow it (Screen & System Audio Recording)."
 echo "  3. Try a recording:   ./.venv/bin/python bin/record       (Ctrl-C to stop)"
 echo "  4. Launch the menubar: ./.venv/bin/python bin/menubar"
 echo "  5. Register the MCP server with Claude (see README.md)."

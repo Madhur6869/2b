@@ -19,7 +19,8 @@ second-brain/
   secondbrain/          # the package
     config.py           # shared paths/settings
     util.py             # slugify, timestamps
-    capture.py          # mic -> WAV (sounddevice)
+    capture.py          # mic + system audio -> WAV (via audiotap)
+    echo.py             # removes the speaker echo of system audio from the mic
     transcribe.py       # WAV -> text (faster-whisper, local)
     store.py            # text -> markdown conversation file
     index.py            # markdown -> embeddings in LanceDB
@@ -31,6 +32,7 @@ second-brain/
     search              # CLI: semantic search
     menubar             # launch the macOS menubar app
   menubar/app.py        # rumps menubar app (start/stop, People picker)
+  audiotap/             # Swift helper: mic + system audio, follows device changes (build.sh)
   mcp_server.py         # MCP server exposing search to Claude
   conversations/        # one .md per conversation  (your brain)
   audio/                # raw WAV recordings
@@ -68,6 +70,14 @@ Then:
    gitignored.
 4. **Microphone access** — grant your terminal (and/or Python)
    System Settings → Privacy & Security → Microphone.
+5. **System audio** — 2B also records what the Mac plays (the other side of a call in
+   AirPods), via `audiotap/` (built by `setup.sh`; rebuild with `audiotap/build.sh`). The
+   first recording asks to record system audio: allow it, or enable Python later under
+   System Settings → Privacy & Security → Screen & System Audio Recording → *System Audio
+   Recording Only*. Without it that side is silent and 2B warns after the recording.
+   With AirPods as the input, 2B records from the built-in mic instead (`capture.mic`).
+   Devices are followed mid-recording (AirPods in/out, a mic unplugged), and on
+   speakers the call's echo is removed from the mic so it isn't recorded twice.
 
 > Secrets and private data never get committed — see `.gitignore`. Only the system
 > code and `people.example.yaml` live in the repo.
