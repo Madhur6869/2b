@@ -1,32 +1,48 @@
-"""Microphone capture to WAV.
+"""Mic + system-audio capture to WAV.
 
-Captures at the input device's NATIVE rate (CoreAudio won't let us force another),
-then downsamples to config.SAMPLE_RATE mono and writes a 16-bit PCM WAV via
-soundfile. Fail-hard: real errors raise.
+The audiotap helper (audiotap/audiotap.swift) captures two sources and follows devices
+as they connect and disconnect:
+
+- the MIC. config capture.mic "auto" = the default input, except a Bluetooth headset
+  (AirPods): then the built-in mic. Re-chosen every second, so a mic that disconnects
+  or stalls is replaced mid-recording;
+- the Mac's audio OUTPUT (capture.system_audio), via a Core Audio process tap. This is
+  what makes calls on AirPods recordable: the other side goes straight into your ears
+  and never reaches a mic.
+
+Every chunk carries a host-clock timestamp. finish() lays both sources onto one
+timeline (a dropout or device switch becomes silence instead of shifting everything
+after it earlier), removes the speaker echo of the system audio from the mic
+(secondbrain/echo.py: on speakers the mic hears the call too, which would otherwise be
+recorded twice), and mixes them into one 16 kHz mono 16-bit WAV.
+Fail-hard: real errors raise.
 """
+import json
+import struct
+import subprocess
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
-import sounddevice as sd
 import soundfile as sf
 
-from secondbrain import config
+from secondbrain import config, echo
+
+# A jump this large between a chunk's timestamp and where the previous chunk ended means
+# audio is missing (nothing playing, a dropout, a device switch): start a new run at the
+# chunk's own timestamp, leaving silence for the gap. Smaller differences are clock
+# jitter, and the run continues on sample count, the device's own clock.
+_GAP_NS = 200_000_000
 
 
-def _to_output_mono(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
-    """Mix to mono and resample src_rate -> dst_rate, returning a 1-D float32 array.
+def _resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Resample 1-D float32 audio src_rate -> dst_rate.
 
     Whisper only needs 16 kHz mono, and a 48 kHz built-in mic otherwise yields 3x
-    larger files and a much heavier ingest. We capture native (CoreAudio's rule) and
-    normalise here. Uses soxr when available, else scipy's polyphase resampler
-    (exact 3:1 for 48k->16k); no-op when the rates already match.
+    larger files and a much heavier ingest. Uses soxr when available, else scipy's
+    polyphase resampler (exact 3:1 for 48k->16k); no-op when the rates already match.
     """
-    if audio.ndim == 2 and audio.shape[1] > 1:
-        audio = audio.mean(axis=1)
-    audio = np.asarray(audio, dtype="float32").reshape(-1)
-
     if src_rate != dst_rate and len(audio):
         try:
             import soxr
@@ -43,137 +59,232 @@ def _to_output_mono(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarr
     return np.asarray(audio, dtype="float32")
 
 
+def _timeline(chunks: list[tuple[int, int, np.ndarray]], t0_ns: int, out_rate: int) -> np.ndarray:
+    """Lay timestamped mono chunks [(host_ns, rate, samples)] onto one out_rate timeline
+    whose sample 0 is host time t0_ns."""
+    runs: list[list] = []  # [start_ns, rate, [arrays], n_samples]
+    for ns, rate, samples in chunks:
+        if runs:
+            run = runs[-1]
+            run_end_ns = run[0] + run[3] * 1_000_000_000 / run[1]
+            if rate == run[1] and ns - run_end_ns < _GAP_NS:
+                run[2].append(samples)
+                run[3] += len(samples)
+                continue
+        runs.append([ns, rate, [samples], len(samples)])
+
+    placed: list[tuple[int, np.ndarray]] = []
+    end = 0
+    for start_ns, rate, arrays, _ in runs:
+        audio = _resample(np.concatenate(arrays).astype("float32"), rate, out_rate)
+        offset = max(end, round((start_ns - t0_ns) * out_rate / 1_000_000_000))
+        placed.append((offset, audio))
+        end = offset + len(audio)
+
+    out = np.zeros(end, dtype="float32")
+    for offset, audio in placed:
+        out[offset : offset + len(audio)] = audio
+    return out
+
+
+def _audiotap(*args: str) -> str:
+    if not config.AUDIOTAP_BIN.exists():
+        raise RuntimeError(f"{config.AUDIOTAP_BIN} is not built. Run audiotap/build.sh.")
+    return subprocess.run(
+        [str(config.AUDIOTAP_BIN), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def describe(event: dict) -> str:
+    """One readable line for an audiotap event."""
+    kind = event["event"]
+    if kind == "mic":
+        return f"mic -> {event['device']} ({event['transport']}, {event['rate']:.0f} Hz): {event['reason']}"
+    if kind == "no_mic":
+        return f"no mic: {event['reason']}"
+    if kind == "output":
+        return f"output -> {event['device']} ({event['transport']})"
+    if kind == "tap":
+        return f"system audio tap: {event['reason']}"
+    return f"audiotap {kind}: {event.get('message', event)}"
+
+
 class Recorder:
-    """Non-blocking microphone recorder backed by a sounddevice InputStream."""
+    """Non-blocking recorder of the mic plus, when configured, the system audio.
 
-    def __init__(
-        self,
-        output_path: Path,
-        sample_rate: int = config.SAMPLE_RATE,
-        channels: int = config.CHANNELS,
-    ):
+    start() -> stop() (fast: capture ends) -> finish() (seconds per hour of audio:
+    mixing and echo removal, then the WAV is written).
+    """
+
+    _HEADER = struct.Struct("<4sQId")  # source, host_ns, frames, sample_rate
+
+    def __init__(self, output_path: Path):
         self.output_path = Path(output_path)
-        self.sample_rate = sample_rate
-        self.channels = channels
+        self.events: list[dict] = []  # audiotap's device events, in order
+        # Set by finish(): problems the user must hear about (a mic gap, missing system
+        # audio, the helper dying). The WAV is written regardless.
+        self.warnings: list[str] = []
 
-        self._frames: list[np.ndarray] = []
-        self._lock = threading.Lock()
-        self._stream: sd.InputStream | None = None
+        # float16 halves the memory of a long meeting (48 kHz: ~350 MB/hour per source
+        # instead of ~700); far more precision than the 16-bit WAV this ends up in.
+        self._chunks: dict[str, list[tuple[int, int, np.ndarray]]] = {"mic": [], "sys": []}
+        self._proc: subprocess.Popen | None = None
+        self._readers: list[threading.Thread] = []
+        self._ready = threading.Event()  # audiotap reported its mic (and tap), or exited
+        self._exited = threading.Event()  # audiotap's stderr closed: it has exited
+        self._read_error = ""
+        self._t0_ns: int | None = None
         self._start_time: float | None = None
         self._stop_time: float | None = None
-        self._statuses: list[str] = []
-
-        # Set by stop(): whether captured audio fell short of wall-clock time
-        # (e.g. a Bluetooth/AirPods mic link dropping out mid-recording).
-        self.had_dropout: bool = False
-        self.dropout_message: str = ""
-
-    def _callback(self, indata, frames, time_info, status):
-        # A non-empty status flags overflow/underflow/device errors — never swallow it.
-        if status:
-            self._statuses.append(str(status))
-        # Copy: sounddevice reuses the underlying buffer between callbacks.
-        with self._lock:
-            self._frames.append(indata.copy())
+        self._died_at: float | None = None  # elapsed() when the helper died on its own
 
     def start(self) -> None:
-        if self._stream is not None:
+        if self._proc is not None:
             raise RuntimeError("Recorder already started")
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Refresh PortAudio's device list so a mic the user just switched to
-        # (built-in, or iPhone via Continuity) is picked up without restarting
-        # the app. PortAudio otherwise caches the device list from process start.
-        sd._terminate()
-        sd._initialize()
-
-        # macOS CoreAudio (AUHAL) rejects sample rates the input device does not
-        # natively provide (PaErrorCode -9986 / AudioUnit err -10851), and PortAudio
-        # will not resample for us. So capture at the device's NATIVE rate and try a
-        # few fallbacks; Whisper resamples to 16 kHz when it reads the file, so the
-        # stored rate does not matter for transcription.
-        dev = sd.query_devices(kind="input")
-        if int(dev["max_input_channels"]) < 1:
-            raise RuntimeError(f"Default input device has no input channels: {dev['name']!r}")
-        native_rate = int(round(dev["default_samplerate"]))
-        max_ch = int(dev["max_input_channels"])
-
-        candidates: list[tuple[int, int]] = []
-        for rate in (native_rate, 48000, 44100, 16000):
-            for ch in (1, max_ch):
-                if (rate, ch) not in candidates:
-                    candidates.append((rate, ch))
-
-        self._frames = []
-        self._statuses = []
-        self.had_dropout = False
-        self.dropout_message = ""
-        last_err: Exception | None = None
-        for rate, ch in candidates:
-            try:
-                stream = sd.InputStream(
-                    samplerate=rate,
-                    channels=ch,
-                    dtype="float32",
-                    callback=self._callback,
-                )
-                stream.start()
-            except sd.PortAudioError as exc:
-                last_err = exc
-                continue
-            self._stream = stream
-            self.sample_rate = rate
-            self.channels = ch
-            print(f"[capture] recording at {rate} Hz, {ch} ch -> {self.output_path.name}")
-            break
-        else:
+        # Both permissions belong to the app that launched us. A denied one delivers
+        # silence rather than an error, so refuse up front. "unknown" (never asked) is
+        # fine: starting capture shows the prompt.
+        permission = json.loads(_audiotap("permission"))
+        if permission["microphone"] == "denied":
             raise RuntimeError(
-                f"Could not open the microphone with any supported config "
-                f"(tried {candidates}). Last PortAudio error: {last_err}"
+                "Microphone access is denied. Enable Python in System Settings > "
+                "Privacy & Security > Microphone."
+            )
+        if config.SYSTEM_AUDIO and permission["system_audio"] == "denied":
+            raise RuntimeError(
+                "Recording system audio is not allowed. In System Settings > Privacy & "
+                "Security > Screen & System Audio Recording, enable Python under "
+                "'System Audio Recording Only', or set capture.system_audio: false."
             )
 
+        args = [str(config.AUDIOTAP_BIN), "record", "--mic", config.MIC]
+        if not config.SYSTEM_AUDIO:
+            args.append("--no-system-audio")
+        for bundle_id in config.SYSTEM_AUDIO_EXCLUDE:
+            args += ["--exclude-bundle-id", bundle_id]
+        self._t0_ns = time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)
+        # Own session: a terminal Ctrl-C stops the CLI, which then stops the helper —
+        # the helper must not see that SIGINT and look like it quit by itself.
+        self._proc = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+        )
+        self._readers = [
+            threading.Thread(target=self._read_records, daemon=True),
+            threading.Thread(target=self._read_events, daemon=True),
+        ]
+        for reader in self._readers:
+            reader.start()
+
+        # Wait for the helper to report its mic (and tap), so a broken start fails here.
+        if not self._ready.wait(timeout=10):
+            self._proc.kill()
+            raise RuntimeError("audiotap did not start within 10 s")
+        if self._exited.is_set():
+            self._proc.wait()
+            raise RuntimeError(f"audiotap failed to start: {self._helper_error()}")
         self._start_time = time.monotonic()
         self._stop_time = None
 
-    def stop(self) -> Path:
-        if self._stream is None:
-            raise RuntimeError("Recorder was never started")
-        self._stream.stop()
-        self._stream.close()
-        self._stream = None
+    def _read_records(self) -> None:
+        stdout = self._proc.stdout
+        while header := stdout.read(self._HEADER.size):
+            if len(header) < self._HEADER.size:
+                self._read_error = f"truncated record header ({len(header)} bytes)"
+                return
+            source, ns, frames, rate = self._HEADER.unpack(header)
+            payload = stdout.read(frames * 4)
+            if len(payload) < frames * 4:
+                self._read_error = f"truncated record ({len(payload)} of {frames * 4} bytes)"
+                return
+            samples = np.frombuffer(payload, dtype="<f4").astype("float16")
+            self._chunks[source.decode().strip()].append((ns, int(rate), samples))
+
+    def _read_events(self) -> None:
+        have_mic = have_tap = False
+        for raw in self._proc.stderr:
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            # Everything audiotap writes is a JSON event; anything else is a crash report.
+            event = json.loads(line) if line.startswith("{") else {"event": "stderr", "message": line}
+            self.events.append(event)
+            print(f"[capture] {describe(event)}", flush=True)
+            have_mic |= event["event"] in ("mic", "no_mic")
+            have_tap |= event["event"] == "tap"
+            if have_mic and (have_tap or not config.SYSTEM_AUDIO):
+                self._ready.set()
+        self._exited.set()
+        self._ready.set()
+
+    def _helper_error(self) -> str:
+        errors = [e.get("message", "") for e in self.events if e["event"] in ("error", "stderr")]
+        return f"exit code {self._proc.returncode}" + (f": {'; '.join(errors)}" if errors else "")
+
+    @property
+    def failure(self) -> str:
+        """Why capture stopped on its own mid-recording; "" while it is running fine."""
+        if not self.is_recording or self._proc.poll() is None:
+            return ""
+        return f"audiotap {self._helper_error()}"
+
+    def stop(self) -> None:
+        """End capture. Fast; call finish() next to build and write the WAV."""
+        if not self.is_recording:
+            raise RuntimeError("Recorder is not recording")
+        if self._proc.poll() is None:
+            self._proc.terminate()
+        else:
+            self._died_at = self.elapsed()
+        for reader in self._readers:
+            reader.join()
+        self._proc.wait()
         self._stop_time = time.monotonic()
 
-        with self._lock:
-            frames = list(self._frames)
-        if frames:
-            audio = np.concatenate(frames, axis=0)
-        else:
-            audio = np.zeros((0, self.channels), dtype="float32")
+    def finish(self) -> Path:
+        """Mix the captured sources into the WAV at output_path and set warnings."""
+        if self._stop_time is None:
+            raise RuntimeError("finish() needs stop() first")
+        rate = config.SAMPLE_RATE
+        mic = _timeline(self._chunks["mic"], self._t0_ns, rate)
+        system = _timeline(self._chunks["sys"], self._t0_ns, rate)
+        length = max(len(mic), len(system))
+        mic = np.pad(mic, (0, length - len(mic)))
+        system = np.pad(system, (0, length - len(system)))
+        if system.any():
+            # The echo path changes with the output device: never fit across a switch.
+            switches = [
+                round((e["host_ns"] - self._t0_ns) * rate / 1_000_000_000)
+                for e in self.events
+                if e["event"] == "output"
+            ]
+            mic, report = echo.remove_echo(mic, system, rate, switches)
+            print(f"[capture] echo: {report}", flush=True)
+        sf.write(str(self.output_path), np.clip(mic + system, -1.0, 1.0), rate, subtype="PCM_16")
 
-        # Dropout detection runs on the RAW capture (native rate, pre-resample):
-        # compare seconds of audio we actually got against wall-clock recording time.
-        captured = len(audio) / self.sample_rate if len(audio) else 0.0
-
-        # Downsample to the configured output rate (16 kHz) and mix to mono BEFORE
-        # writing, so files stay small and ingest stays light regardless of which
-        # mic was the default (a 48 kHz built-in mic otherwise triples file size).
-        out_audio = _to_output_mono(audio, self.sample_rate, config.SAMPLE_RATE)
-        sf.write(
-            str(self.output_path),
-            out_audio,
-            config.SAMPLE_RATE,
-            subtype="PCM_16",
-        )
+        self.warnings = []
+        if self._died_at is not None:
+            m, s = divmod(int(self._died_at), 60)
+            self.warnings.append(f"Capture stopped by itself {m}:{s:02d} in ({self._helper_error()}).")
+        if self._read_error:
+            self.warnings.append(f"Reading audio from audiotap failed: {self._read_error}.")
+        captured = sum(len(samples) / r for _, r, samples in self._chunks["mic"])
         wall = self.elapsed()
-        self.had_dropout = wall - captured > 3.0 and captured < 0.8 * wall
-        if self.had_dropout:
-            self.dropout_message = (
-                f"Captured only {captured:.0f}s of audio but recording ran for "
-                f"{wall:.0f}s — the mic input dropped out mid-recording "
-                f"(usually a Bluetooth/AirPods link glitch; {len(self._statuses)} "
-                f"stream warning(s)). Switch input to the built-in mic for reliable capture."
+        if wall - captured > 3.0 and captured < 0.8 * wall:
+            mic_events = "; ".join(describe(e) for e in self.events if e["event"] in ("mic", "no_mic"))
+            self.warnings.append(
+                f"Only {captured:.0f}s of the {wall:.0f}s recording has mic audio — the mic "
+                f"dropped out or was missing. Mic changes: {mic_events}"
             )
-            print(f"[capture] WARNING: {self.dropout_message}")
+        if config.SYSTEM_AUDIO and json.loads(_audiotap("permission"))["system_audio"] != "granted":
+            self.warnings.append(
+                "Recording system audio is not allowed, so the other side of any call is "
+                "missing. Allow Python in System Settings > Privacy & Security > Screen & "
+                "System Audio Recording."
+            )
+        for warning in self.warnings:
+            print(f"[capture] WARNING: {warning}", flush=True)
         return self.output_path
 
     def elapsed(self) -> float:
@@ -184,7 +295,7 @@ class Recorder:
 
     @property
     def is_recording(self) -> bool:
-        return self._stream is not None
+        return self._start_time is not None and self._stop_time is None
 
 
 def record_until_interrupt(output_path: Path) -> Path:
@@ -193,11 +304,13 @@ def record_until_interrupt(output_path: Path) -> Path:
     recorder.start()
     print("Recording... Ctrl-C to stop")
     try:
-        while True:
+        while not recorder.failure:
             time.sleep(0.25)
+        print(f"Capture stopped: {recorder.failure}")
     except KeyboardInterrupt:
         pass
-    path = recorder.stop()
+    recorder.stop()
+    path = recorder.finish()
     from secondbrain import util
 
     print(f"Stopped after {util.human_duration(recorder.elapsed())}")

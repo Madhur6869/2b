@@ -21,6 +21,9 @@ index/
 .venv/
 *.log
 
+# ── Built helper (audiotap/build.sh) ────────────────────────────────────
+audiotap/audiotap
+
 # ── Python ─────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
