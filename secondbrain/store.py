@@ -30,8 +30,16 @@ def write_conversation(
     audio_path: Path | None,
     transcript: dict,
     started_at: datetime,
+    diarized: bool = False,
 ) -> Path:
-    """Write a conversation .md file and return its Path."""
+    """Write a conversation .md file and return its Path.
+
+    `diarized` records whether speaker labelling actually succeeded. It is written
+    to the frontmatter because diarization is a soft-fail step: without this flag an
+    unlabelled transcript is indistinguishable from a labelled one that happened to
+    have few turns, and audio retention (secondbrain/prune.py) depends on knowing
+    the difference.
+    """
     if audio_path is not None:
         audio_rel = str(Path(audio_path).resolve().relative_to(config.ROOT))
     else:
@@ -45,6 +53,7 @@ def write_conversation(
         "topics": [],
         "language": transcript["language"],
         "title": title,
+        "diarized": bool(diarized),
     }
 
     md_path = (

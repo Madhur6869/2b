@@ -28,6 +28,7 @@ def ingest(
     # Diarization is an ENRICHMENT: if it's unavailable (model not yet accessible,
     # etc.) we must NOT lose the transcript — save it plain and warn loudly. This is a
     # deliberate, visible fallback, not silent swallowing.
+    diarized_ok = False
     if config.DIARIZE_ENABLED:
         from secondbrain import diarize
 
@@ -37,6 +38,7 @@ def ingest(
             labeled = diarize.label_segments(transcript["segments"], turns)
             transcript["segments"] = labeled
             transcript["text"] = diarize.format_labeled_text(labeled)
+            diarized_ok = True
         except Exception as exc:
             print(
                 f"[ingest] WARNING: diarization failed ({type(exc).__name__}: {exc}). "
@@ -50,6 +52,7 @@ def ingest(
         audio_path=audio_path,
         transcript=transcript,
         started_at=started_at,
+        diarized=diarized_ok,
     )
 
     # Import lazily and AFTER the md is safely on disk, so a missing indexing
@@ -73,11 +76,18 @@ def reingest_existing(md_path: Path) -> Path:
     parsed = store.parse_conversation(md_path)
     fm = dict(parsed["frontmatter"])
     audio = config.ROOT / fm["audio"]
+    if fm.get("audio_pruned"):
+        raise FileNotFoundError(
+            f"{md_path.name}: audio was pruned on {fm['audio_pruned']} once the conversation "
+            f"was transcribed and diarized (see secondbrain/prune.py). Re-ingest is impossible; "
+            f"the existing transcript is the only record."
+        )
     if not fm.get("audio") or not audio.exists():
         raise FileNotFoundError(f"No audio for {md_path.name} (frontmatter audio={fm.get('audio')!r})")
 
     print(f"[reingest] {md_path.name}: re-transcribing {audio.name}...")
     transcript = transcribe.transcribe(audio)
+    diarized_ok = False
     if config.DIARIZE_ENABLED:
         from secondbrain import diarize
         try:
@@ -85,11 +95,13 @@ def reingest_existing(md_path: Path) -> Path:
             turns = diarize.diarize(audio, num_speakers=n_spk)
             labeled = diarize.label_segments(transcript["segments"], turns)
             transcript["text"] = diarize.format_labeled_text(labeled)
+            diarized_ok = True
         except Exception as exc:
             print(f"[reingest] WARNING: diarization failed ({type(exc).__name__}: {exc}). Plain transcript.")
 
     # Rewrite the file as frontmatter + fresh raw transcript, un-distilled.
     fm.pop("distilled", None)
+    fm["diarized"] = diarized_ok
     fm_yaml = yaml.safe_dump(fm, sort_keys=False, default_flow_style=None, allow_unicode=True)
     md_path.write_text(f"---\n{fm_yaml}---\n{transcript['text']}\n", encoding="utf-8")
 

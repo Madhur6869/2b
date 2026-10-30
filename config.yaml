@@ -83,3 +83,14 @@ distill:
   # auto-detect the CLI on PATH; set an absolute path if launchd can't find it.
   claude_bin: ""
   poll_seconds: 900    # how often the launchd job scans for new transcripts
+
+audio_retention:
+  # Audio is the biggest thing we store (~100 MB/hour) and is never backed up.
+  # Once a recording is transcribed AND diarized, the .wav has served its purpose,
+  # so it expires. Set enabled: false to keep audio forever.
+  enabled: true
+  ttl_days: 30
+  # Refuse to delete audio whose transcript has no speaker labels. Diarization is a
+  # soft-fail step (see ingest.py) — when it fails the transcript is still written,
+  # just unlabelled, and the audio is then the ONLY way to recover who said what.
+  require_diarized: true

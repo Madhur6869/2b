@@ -80,6 +80,14 @@ HF_TOKEN_PATH = ROOT / ".hf_token"
 # everywhere, so this is the earliest reliable place.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+# --- audio retention ---
+# Audio expires once its conversation is transcribed, diarized and distilled.
+# See secondbrain/prune.py for the full set of conditions.
+_audio_ret = _cfg.get("audio_retention", {})
+AUDIO_TTL_ENABLED = bool(_audio_ret.get("enabled", False))
+AUDIO_TTL_DAYS = int(_audio_ret.get("ttl_days", 30))
+AUDIO_TTL_REQUIRE_DIARIZED = bool(_audio_ret.get("require_diarized", True))
+
 # --- distill ---
 _CLAUDE_BIN_CFG = _cfg.get("distill", {}).get("claude_bin", "") or ""
 DISTILL_POLL_SECONDS = int(_cfg.get("distill", {}).get("poll_seconds", 900))
