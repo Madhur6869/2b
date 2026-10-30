@@ -90,19 +90,18 @@ Click 🧠 → **Start Recording** (icon turns 🔴 with a timer) → tick who's
 
 ## Wire it into Claude Code
 
-Register the MCP server so any Claude session can search your brain. Add to your Claude Code
-MCP config (`~/.claude.json` under `mcpServers`, or a project `.mcp.json`):
+Run ONE shared MCP server and point every Claude session at it. Don't register a stdio
+server: that starts one copy per session (~160 MB each, because fastembed + lancedb load).
+With 51 sessions open on 2026-10-27, that was 8 GB.
 
-```json
-{
-  "mcpServers": {
-    "second-brain": {
-      "command": "/Users/madhur/second-brain/.venv/bin/python",
-      "args": ["/Users/madhur/second-brain/mcp_server.py"]
-    }
-  }
-}
+```bash
+cp com.terran.secondbrain.mcp.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.terran.secondbrain.mcp.plist
+claude mcp add --transport http --scope user second-brain http://127.0.0.1:8765/mcp
 ```
+
+The server runs `mcp_server.py --http`, serves 127.0.0.1 only, and logs to `mcp.log`. After
+pulling code changes, restart it with `launchctl kickstart -k gui/$(id -u)/com.terran.secondbrain.mcp`.
 
 Claude then has these tools: `search_conversations`, `get_conversation`,
 `list_recent_conversations`, `who_is`.
