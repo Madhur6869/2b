@@ -9,6 +9,7 @@ Fail-hard: real errors raise.
 from pathlib import Path
 
 from secondbrain import config
+from secondbrain.despam import clean_segments
 
 # Map friendly model names to mlx-community HF repos (used by the mlx backend).
 _MLX_REPOS = {
@@ -100,6 +101,15 @@ def transcribe(audio_path: Path) -> dict:
         result = _transcribe_faster_whisper(audio_path)
     else:
         raise ValueError(f"Unknown whisper backend {config.WHISPER_BACKEND!r} (mlx | faster-whisper)")
+    # Whisper keeps a repetitive window's output when every temperature in its
+    # fallback ladder still fails its compression-ratio check, so degenerate loops
+    # reach us regardless of decode settings. Strip them here, for both backends.
+    segments, dropped = clean_segments(result["segments"])
+    if dropped:
+        result["segments"] = segments
+        result["text"] = "\n".join(s["text"] for s in segments)
+        print(f"[transcribe] despam: removed {dropped} words of degenerate repetition "
+              f"({len(result['segments'])} segments after merge)")
     print(f"[transcribe] done: {len(result['segments'])} segments, "
           f"language={result['language']}, duration={result['duration']:.1f}s")
     return result

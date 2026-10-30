@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Strip degenerate STT repetition loops from conversation transcripts already on disk.
+
+Usage:
+  bin/repair-transcripts                 # report what would change (dry run)
+  bin/repair-transcripts --apply         # rewrite files in place
+  bin/repair-transcripts --file PATH ... # limit to specific conversation(s)
+
+Only the RAW TRANSCRIPT portion is touched; any distilled summary is left alone.
+"""
+import argparse
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from secondbrain import config
+from secondbrain.despam import collapse
+from secondbrain.distill import RAW_MARK
+
+
+def repair_text(body: str) -> tuple[str, int]:
+    """Collapse loops line by line, preserving SPEAKER_xx: prefixes."""
+    total = 0
+    out = []
+    for line in body.splitlines():
+        m = re.match(r"(SPEAKER_\S+:\s*)(.*)", line)
+        prefix, text = (m.group(1), m.group(2)) if m else ("", line)
+        cleaned, removed = collapse(text)
+        total += removed
+        out.append(prefix + cleaned)
+    return "\n".join(out), total
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
+    ap.add_argument("--file", type=Path, nargs="*", help="specific conversation .md files")
+    args = ap.parse_args()
+
+    targets = args.file or sorted(config.CONVERSATIONS_DIR.glob("*.md"))
+    grand = 0
+    for p in targets:
+        full = p.read_text()
+        head, mark, raw = full.partition(RAW_MARK)
+        if not mark:            # undistilled file: body is all raw transcript
+            fm_end = full.index("---", 3) + 3
+            head, raw = full[:fm_end], full[fm_end:]
+        cleaned, removed = repair_text(raw)
+        if not removed:
+            continue
+        grand += removed
+        print(f"{'FIX ' if args.apply else 'DRY '}{p.name}: -{removed} words of loop debris")
+        if args.apply:
+            p.with_suffix(".md.bak").write_text(full)
+            p.write_text(head + mark + cleaned)
+    print(f"\n{'removed' if args.apply else 'would remove'} {grand} words across "
+          f"{len(targets)} file(s)" + ("" if args.apply else "  (re-run with --apply)"))
+
+
+if __name__ == "__main__":
+    main()
