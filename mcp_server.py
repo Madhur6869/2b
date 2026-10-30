@@ -1,8 +1,14 @@
 """MCP server exposing the local Second Brain to Claude Code.
 
-Runs over stdio (the default FastMCP transport). Registers tools for
-semantic search across recorded desk conversations, reading a full
-conversation, listing recent conversations, and looking up colleagues.
+Registers tools for semantic search across recorded desk conversations,
+reading a full conversation, listing recent conversations, and looking up
+colleagues.
+
+`--http` runs ONE shared server on http://127.0.0.1:MCP_HTTP_PORT/mcp (the
+com.terran.secondbrain.mcp LaunchAgent). Claude Code connects to that URL.
+Without `--http` it runs over stdio, which starts one copy per session. That
+loads fastembed + lancedb (~160 MB) into every session: 51 copies held 8 GB
+on 2026-10-27.
 
 Fail-hard philosophy: no broad exception-swallowing. Real errors raise.
 """
@@ -55,11 +61,33 @@ def search_conversations(query: str, k: int = MCP_DEFAULT_K) -> str:
     return header + "\n\n".join(blocks)
 
 
+# Claude Code rejects a tool result above ~25k tokens outright (it lands in a
+# tool-results file instead of the context). A 71k-char transcript did that
+# on 2026-10-17, so transcripts are paged: `max_chars` per call, `offset` to
+# continue. 0 disables the cap.
+MCP_TRANSCRIPT_PAGE_CHARS = 40_000
+
+
 @mcp.tool()
-def get_conversation(conversation_id: str) -> str:
-    """Return the full transcript and metadata for one conversation by its id
-    (the markdown filename stem, e.g. 2026-07-16_1430_planner-latency). Use after
-    search to read the whole conversation."""
+def get_conversation(
+    conversation_id: str = "",
+    source_id: str = "",
+    max_chars: int = MCP_TRANSCRIPT_PAGE_CHARS,
+    offset: int = 0,
+) -> str:
+    """Return the transcript and metadata for one conversation by its id
+    (the markdown filename stem, e.g. 2026-07-16_1430_planner-latency — the
+    'source id' shown by search_conversations). Use after search to read the whole
+    conversation. `source_id` is accepted as an alias for `conversation_id`.
+
+    Long transcripts come in pages: at most `max_chars` characters of transcript
+    per call (default 40000; 0 = no limit), starting at character `offset`. A
+    truncated page ends with the offset to pass for the next page. The distilled
+    summary sits at the top of the transcript, so the first page usually answers
+    the question."""
+    conversation_id = conversation_id or source_id
+    if not conversation_id:
+        return "get_conversation needs conversation_id=<the 'source id' from search_conversations>."
     md_path = CONVERSATIONS_DIR / f"{conversation_id}.md"
     if not md_path.exists():
         available = [p.stem for p in list_conversations()[:10]]
@@ -72,13 +100,27 @@ def get_conversation(conversation_id: str) -> str:
     conv = parse_conversation(md_path)
     fm = conv["frontmatter"] or {}
     meta = "\n".join(f"{key}: {value}" for key, value in fm.items())
+    body = conv["body"].strip()
+    total = len(body)
+    offset = max(0, int(offset or 0))
+    page = body[offset:]
+    trailer = ""
+    if max_chars and max_chars > 0 and len(page) > max_chars:
+        page = page[:max_chars]
+        nxt = offset + max_chars
+        trailer = (
+            f"\n--- truncated: transcript chars {offset}-{nxt} of {total}; "
+            f"call get_conversation again with offset={nxt} for the next page ---"
+        )
+    elif offset:
+        trailer = f"\n--- end of transcript (chars {offset}-{total} of {total}) ---"
     return (
         f"id: {conv['id']}\n"
         f"path: {conv['path']}\n"
         f"--- metadata ---\n"
         f"{meta}\n"
-        f"--- transcript ---\n"
-        f"{conv['body'].strip()}"
+        f"--- transcript ({total} chars) ---\n"
+        f"{page}{trailer}"
     )
 
 
@@ -149,10 +191,15 @@ def list_topics() -> str:
 
 
 @mcp.tool()
-def get_topic(topic: str) -> str:
+def get_topic(topic: str = "", slug: str = "") -> str:
     """Return the full living topic note for a slug (e.g. 'robot-safety-control-architecture').
     This is synthesized, accumulated knowledge — prefer it over raw transcript search when
-    the user asks 'what do we know / what's our thinking about <topic>'."""
+    the user asks 'what do we know / what's our thinking about <topic>'. `slug` is accepted
+    as an alias for `topic`."""
+    topic = topic or slug
+    if not topic:
+        avail = ", ".join(t["slug"] for t in query.list_topics()) or "(none)"
+        return f"get_topic needs topic=<slug>. Available: {avail}"
     note = query.get_topic(topic)
     if note is None:
         avail = ", ".join(t["slug"] for t in query.list_topics()) or "(none)"
@@ -175,5 +222,14 @@ def list_action_items(open_only: bool = True) -> str:
     return "\n".join(lines)
 
 
+MCP_HTTP_PORT = 8765
+
+
 if __name__ == "__main__":
-    mcp.run()  # stdio transport by default
+    if sys.argv[1:] == ["--http"]:
+        mcp.settings.port = MCP_HTTP_PORT  # host stays 127.0.0.1: local clients only
+        mcp.run(transport="streamable-http")
+    elif sys.argv[1:]:
+        sys.exit(f"usage: {sys.argv[0]} [--http]")
+    else:
+        mcp.run()  # stdio
