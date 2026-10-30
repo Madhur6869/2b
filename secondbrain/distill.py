@@ -45,10 +45,6 @@ Output EXACTLY in the following format and NOTHING else (no preamble, no code fe
 ## Decisions
 <bullet list of decisions/conclusions reached; "- none" if truly none>
 
-## Action items
-<bullet list "- [ ] Owner — task"; attribute an owner from the participants when the \
-transcript makes it clear, else "- [ ] (unassigned) — task"; "- none" if none>
-
 ## Open questions
 <bullet list of unresolved questions raised; "- none" if none>
 

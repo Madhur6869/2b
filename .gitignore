@@ -16,6 +16,7 @@ audio/
 conversations/
 topics/
 index/
+archive/
 
 # ── Local environment & generated logs ─────────────────────────────────
 .venv/
