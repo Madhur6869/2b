@@ -21,6 +21,8 @@ archive/
 # ── Local environment & generated logs ─────────────────────────────────
 .venv/
 *.log
+.ingest.lock
+.*_alerted
 
 # ── Built helper (audiotap/build.sh) ────────────────────────────────────
 audiotap/audiotap

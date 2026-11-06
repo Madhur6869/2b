@@ -285,6 +285,9 @@ class Recorder:
             )
         for warning in self.warnings:
             print(f"[capture] WARNING: {warning}", flush=True)
+        # The WAV is the record now. Callers keep this object alive through ingest, and
+        # an hour of two 48 kHz sources is ~700 MB of chunks.
+        self._chunks = {"mic": [], "sys": []}
         return self.output_path
 
     def elapsed(self) -> float:

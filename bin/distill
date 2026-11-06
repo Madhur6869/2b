@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from secondbrain import config, util
 from secondbrain.distill import distill_all, distill_file
 
 
@@ -21,11 +22,15 @@ def main() -> None:
     ap.add_argument("--file", type=Path, help="distill a single conversation .md")
     args = ap.parse_args()
 
-    if args.file:
-        distill_file(args.file)
-    else:
-        n = distill_all(force=args.all)
-        print(f"distilled {n} conversation(s)")
+    try:
+        if args.file:
+            distill_file(args.file)
+        else:
+            n = distill_all(force=args.all)
+            print(f"distilled {n} conversation(s)")
+    except Exception as exc:
+        util.notify_failure("distill", f"{type(exc).__name__}: {exc}", config.ROOT)
+        raise
 
 
 if __name__ == "__main__":

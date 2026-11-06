@@ -101,28 +101,30 @@ LANCE_TABLE = "chunks"
 
 
 def resolve_claude_bin() -> str:
-    """Absolute path to the `claude` CLI. Uses the configured path if set,
-    else searches PATH and common install locations. Raises if not found —
-    distillation cannot run without it."""
+    """Absolute path to the `claude` CLI: the configured path if set, else PATH, else the
+    newest nvm install. Raises if none is usable: distillation can't run without it."""
+    import re
     import shutil
+
     if _CLAUDE_BIN_CFG:
         return _CLAUDE_BIN_CFG
     found = shutil.which("claude")
     if found:
         return found
-    # launchd runs with a minimal PATH; check common nvm/homebrew locations.
-    from pathlib import Path as _P
-    for base in (_P.home() / ".nvm/versions/node", _P("/opt/homebrew/bin"), _P("/usr/local/bin")):
-        if base.name == "bin":
-            cand = base / "claude"
-            if cand.exists():
-                return str(cand)
-        elif base.exists():
-            for node_dir in sorted(base.glob("*/bin/claude"), reverse=True):
-                return str(node_dir)
+    # launchd's PATH has no nvm. Compare versions as numbers (as text, v24.3.0 outranks
+    # v24.22.1) and skip anything not executable: a failed npm postinstall leaves a text
+    # stub in place of the binary, which is what stopped distillation from 2026-10-26.
+    installs = sorted(
+        (Path.home() / ".nvm/versions/node").glob("*/bin/claude"),
+        key=lambda c: [int(n) for n in re.findall(r"\d+", c.parent.parent.name)],
+        reverse=True,
+    )
+    for cand in installs:
+        if os.access(cand, os.X_OK):
+            return str(cand)
     raise RuntimeError(
-        "Could not find the `claude` CLI. Set distill.claude_bin in config.yaml "
-        "to its absolute path (run `which claude` to find it)."
+        f"No usable `claude` CLI (not on PATH; nvm installs checked: {[str(c) for c in installs]}). "
+        "Set distill.claude_bin in config.yaml to its absolute path (`which claude`)."
     )
 
 

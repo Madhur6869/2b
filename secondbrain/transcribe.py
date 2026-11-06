@@ -6,6 +6,7 @@
 Both return the same dict shape: {text, language, duration, segments}.
 Fail-hard: real errors raise.
 """
+import gc
 from pathlib import Path
 
 from secondbrain import config
@@ -23,15 +24,34 @@ _MLX_REPOS = {
 
 _FW_MODEL = None  # faster-whisper singleton
 
+# MLX keeps freed Metal buffers for reuse, up to 17 GiB by default on an 18 GB Mac. Measured
+# on a 62 min recording, this cap takes the peak footprint from 5.3 to 2.9 GiB at the same
+# speed, with byte-identical text under a fixed seed.
+_MLX_CACHE_LIMIT = 256 * 1024 * 1024
+
 
 def _mlx_repo() -> str:
     m = config.WHISPER_MODEL
     return m if "/" in m else _MLX_REPOS.get(m, _MLX_REPOS["medium"])
 
 
+def _release_mlx() -> None:
+    """Free the Whisper model, which mlx_whisper pins in a class attribute, and MLX's pool
+    of freed buffers. Diarization runs next in the same process."""
+    import mlx.core as mx
+    from mlx_whisper.transcribe import ModelHolder
+
+    ModelHolder.model = None
+    ModelHolder.model_path = None
+    gc.collect()
+    mx.clear_cache()
+
+
 def _transcribe_mlx(audio_path: Path) -> dict:
+    import mlx.core as mx
     import mlx_whisper
 
+    mx.set_cache_limit(_MLX_CACHE_LIMIT)
     repo = _mlx_repo()
     print(f"[transcribe] mlx (Apple GPU) model={repo}...")
     result = mlx_whisper.transcribe(
@@ -44,6 +64,7 @@ def _transcribe_mlx(audio_path: Path) -> dict:
         # punctuation. The faster-whisper path already disables it; match it here.
         condition_on_previous_text=False,
     )
+    _release_mlx()
     segments = [
         {"start": float(s["start"]), "end": float(s["end"]), "text": s["text"].strip()}
         for s in result.get("segments", [])

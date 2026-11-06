@@ -68,6 +68,20 @@ def _get_pipeline():
     return _PIPELINE
 
 
+def _load_waveform(audio_path: Path) -> dict:
+    """The audio as pyannote's in-memory input, decoded with soundfile.
+
+    Given a path, pyannote decodes through torchcodec, which links against one of a fixed
+    set of FFmpeg major versions. `brew upgrade` to FFmpeg 9 (2026-10-22) broke it, and
+    every recording for two weeks lost its speaker labels. Our files are all plain WAV.
+    """
+    import soundfile as sf
+    import torch
+
+    samples, rate = sf.read(str(audio_path), dtype="float32", always_2d=True)
+    return {"waveform": torch.from_numpy(samples.T), "sample_rate": rate}  # (channel, time)
+
+
 def diarize(audio_path: Path, num_speakers: int | None = None) -> list[dict]:
     """Return speaker turns: [{'start': float, 'end': float, 'speaker': str}, ...].
 
@@ -79,10 +93,12 @@ def diarize(audio_path: Path, num_speakers: int | None = None) -> list[dict]:
     print(f"[diarize] diarizing {Path(audio_path).name}"
           f"{f' (num_speakers={num_speakers})' if num_speakers else ''}...")
 
+    audio = _load_waveform(audio_path)
+
     def _run(pipe):
         if num_speakers and num_speakers > 1:
-            return pipe(str(audio_path), num_speakers=num_speakers)
-        return pipe(str(audio_path))
+            return pipe(audio, num_speakers=num_speakers)
+        return pipe(audio)
 
     try:
         annotation = _run(pipeline)
@@ -107,6 +123,10 @@ def diarize(audio_path: Path, num_speakers: int | None = None) -> list[dict]:
         {"start": float(turn.start), "end": float(turn.end), "speaker": speaker}
         for turn, _, speaker in annotation.itertracks(yield_label=True)
     ]
+    # No turns would label every line SPEAKER_? yet count as diarized, which makes the
+    # audio eligible for deletion (prune.py) with nothing recovered.
+    if not turns:
+        raise RuntimeError(f"pyannote found no speech turns in {Path(audio_path).name}")
     n_speakers = len({t["speaker"] for t in turns})
     print(f"[diarize] done: {len(turns)} turns, {n_speakers} speaker(s)")
     return turns

@@ -4,12 +4,29 @@ The markdown file is written BEFORE indexing, so a transcription result is
 never lost if indexing deps are missing. We still let indexing errors raise —
 fail-hard, no swallowing.
 """
+import fcntl
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 from secondbrain import config, store, transcribe
 
 
+@contextmanager
+def _one_at_a_time():
+    """Serialize the heavy pipeline across processes: Whisper + pyannote peak at several
+    GB, and two at once on an 18 GB Mac means a swap storm. The kernel drops the lock when
+    the holder exits, so a crash can't leave it stuck."""
+    with open(config.ROOT / ".ingest.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("[ingest] another ingest is running; waiting for it...", flush=True)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+@_one_at_a_time()
 def ingest(
     audio_path: Path,
     title: str,
@@ -66,9 +83,14 @@ def ingest(
     return md_path
 
 
+@_one_at_a_time()
 def reingest_existing(md_path: Path) -> Path:
-    """Re-transcribe (+diarize) an existing conversation from its audio, replace the raw
-    transcript, and re-distill. Used to retro-apply diarization / a better model."""
+    """Re-transcribe (+diarize) an existing conversation from its audio and replace the raw
+    transcript. Used to retro-apply diarization / a better model.
+
+    The file goes back to un-distilled, so the distill job re-summarizes it. A diarization
+    failure raises and leaves the file as it was: rewriting it unlabelled gains nothing.
+    """
     import yaml
     from secondbrain import store
 
@@ -90,14 +112,12 @@ def reingest_existing(md_path: Path) -> Path:
     diarized_ok = False
     if config.DIARIZE_ENABLED:
         from secondbrain import diarize
-        try:
-            n_spk = len(fm.get("participants") or []) or None
-            turns = diarize.diarize(audio, num_speakers=n_spk)
-            labeled = diarize.label_segments(transcript["segments"], turns)
-            transcript["text"] = diarize.format_labeled_text(labeled)
-            diarized_ok = True
-        except Exception as exc:
-            print(f"[reingest] WARNING: diarization failed ({type(exc).__name__}: {exc}). Plain transcript.")
+
+        n_spk = len(fm.get("participants") or []) or None
+        turns = diarize.diarize(audio, num_speakers=n_spk)
+        labeled = diarize.label_segments(transcript["segments"], turns)
+        transcript["text"] = diarize.format_labeled_text(labeled)
+        diarized_ok = True
 
     # Rewrite the file as frontmatter + fresh raw transcript, un-distilled.
     fm.pop("distilled", None)
@@ -107,7 +127,5 @@ def reingest_existing(md_path: Path) -> Path:
 
     from secondbrain.index import index_file
     index_file(md_path)
-    from secondbrain.distill import distill_file
-    distill_file(md_path)
     print(f"[reingest] done: {md_path}")
     return md_path
