@@ -1,7 +1,9 @@
 """macOS menubar app for the Second Brain.
 
-Records the mic plus system audio, tags participants from the People roster, and hands
-the WAV to the ingest pipeline (transcribe -> store -> index).
+Records the mic plus system audio and hands the WAV to the ingest pipeline (transcribe ->
+store -> index), which runs as a child process. This process stays up for weeks and holds
+the only copy of a recording in progress, so nothing heavy may load into it: run in-process,
+Whisper, pyannote and the embedder left it holding 13 GB when idle (2026-11-06).
 
 Fail-hard philosophy adapted for a long-running UI: recording/ingest actions
 CATCH exceptions so a single bad action doesn't kill the app, but they surface
@@ -20,14 +22,30 @@ import traceback
 import rumps
 from PyObjCTools import AppHelper
 
-from secondbrain import config, util
+from secondbrain import config, store, util
 from secondbrain.capture import Recorder
-from secondbrain.ingest import ingest
 
 
 def _on_main(func, *args):
     """Run an AppKit/UI call on the main thread (safe from worker threads)."""
     AppHelper.callAfter(func, *args)
+
+
+def _run_bin(tool: str, *args: str) -> str:
+    """Run a bin/ tool in its own process and return the last line of its stdout.
+
+    Its memory goes back to the OS when it exits, and its crash can't take this process
+    down with it. Its stderr, where the logs go, is inherited into menubar.log.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(config.ROOT / "bin" / tool), *args],
+        stdout=subprocess.PIPE,
+        text=True,
+        check=True,
+        cwd=config.ROOT,
+    )
+    return proc.stdout.strip().splitlines()[-1]
+
 
 # Plain-text titles: emoji glyphs render as a "tofu" box on some menu-bar setups,
 # making the item impossible to find. Text always renders and is unmistakable.
@@ -146,16 +164,30 @@ class SecondBrainApp(rumps.App):
                 if recorder.warnings:
                     # Warn loudly if a source dropped out (don't silently save junk).
                     _on_main(rumps.alert, "Second Brain — audio problem", "\n\n".join(recorder.warnings))
-                md_path = ingest(audio_path, title, participants, started_at)
+                md_path = Path(_run_bin(
+                    "ingest", str(audio_path),
+                    "--title", title,
+                    "--participants", ",".join(participants),
+                    "--at", started_at.isoformat(),
+                ))
+                labelled = store.parse_conversation(md_path)["frontmatter"]["diarized"]
             except Exception as exc:
                 # AppKit UI (alerts/notifications/menu edits) MUST run on the main
                 # thread — calling them from this worker crashes with NSWindow errors
                 # and hides the real failure. Marshal via AppHelper.callAfter.
                 _on_main(lambda: setattr(self.status_item, "title", "Idle"))
-                _on_main(rumps.alert, "Second Brain", f"Ingest failed:\n{exc}")
+                _on_main(rumps.alert, "Second Brain", f"Ingest failed:\n{exc}\n\nDetails in menubar.log.")
                 traceback.print_exc()
                 return
-            _on_main(rumps.notification, "Second Brain", "Saved", Path(md_path).name)
+            if config.DIARIZE_ENABLED and not labelled:
+                _on_main(
+                    rumps.alert,
+                    "Second Brain — no speaker labels",
+                    f"{md_path.name} was saved without speaker labels because diarization "
+                    "failed (reason in menubar.log). Its audio is kept; bin/rediarize --apply "
+                    "recovers the labels once that is fixed.",
+                )
+            _on_main(rumps.notification, "Second Brain", "Saved", md_path.name)
             _on_main(lambda: setattr(self.status_item, "title", "Idle"))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -169,9 +201,7 @@ class SecondBrainApp(rumps.App):
     def on_reindex(self, _):
         def worker():
             try:
-                from secondbrain import index
-
-                total = index.reindex_all()
+                total = _run_bin("reindex")
             except Exception as exc:
                 _on_main(rumps.alert, "Second Brain", f"Re-index failed:\n{exc}")
                 traceback.print_exc()

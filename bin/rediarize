@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Recover speaker labels on recordings that were saved without them.
+
+Diarization is a soft-fail step, so when it breaks (FFmpeg upgrade, 2026-10-22) transcripts
+keep landing unlabelled. Their audio is kept for exactly this. Re-transcribes, re-diarizes
+and rewrites each one; the distill job then re-summarizes it.
+
+Usage:
+  bin/rediarize               # list what would be redone
+  bin/rediarize --apply       # redo them all, one process each, newest first
+  bin/rediarize --file PATH   # redo one (what --apply runs per recording)
+
+Each recording runs in its own process so its memory goes back to the OS, and a failure
+leaves that file untouched and moves on to the next. Safe to stop and re-run.
+"""
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from secondbrain import config
+from secondbrain.store import list_conversations, parse_conversation
+
+
+def unlabelled() -> list[Path]:
+    out = []
+    for path in list_conversations():
+        fm = parse_conversation(path)["frontmatter"] or {}
+        if fm.get("diarized") is False and fm.get("audio") and (config.ROOT / fm["audio"]).exists():
+            out.append(path)
+    return out
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--apply", action="store_true", help="redo every unlabelled recording")
+    ap.add_argument("--file", type=Path, help="redo one conversation .md")
+    args = ap.parse_args()
+
+    if args.file:
+        from secondbrain.ingest import reingest_existing
+
+        reingest_existing(args.file)
+        return
+
+    targets = unlabelled()
+    for path in targets:
+        print(path.name, flush=True)
+    if not args.apply:
+        print(f"{len(targets)} recording(s) without speaker labels. --apply to redo them.")
+        return
+
+    failed = []
+    for path in targets:
+        if subprocess.run([sys.executable, __file__, "--file", str(path)]).returncode != 0:
+            failed.append(path.name)
+    print(f"redid {len(targets) - len(failed)} of {len(targets)}", flush=True)
+    if failed:
+        sys.exit(f"failed, files left as they were: {', '.join(failed)}")
+
+
+if __name__ == "__main__":
+    main()

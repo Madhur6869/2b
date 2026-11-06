@@ -1,8 +1,8 @@
 # Second Brain
 
-A fully local, private pipeline that records your desk conversations, transcribes them
-on-device, stores them as searchable markdown, and makes them available to Claude Code as
-context. Nothing leaves your machine; no paid services.
+A private pipeline that records your desk conversations, transcribes them on-device, stores
+them as searchable markdown, and makes them available to Claude Code as context. Audio stays
+on your machine. Transcripts go to Claude only for distillation (see Privacy).
 
 ```
 🎙️ capture  →  📝 transcribe (local Whisper)  →  🗂️ markdown  →  🔎 embeddings/RAG  →  🤖 Claude (via MCP)
@@ -21,17 +21,22 @@ second-brain/
     util.py             # slugify, timestamps
     capture.py          # mic + system audio -> WAV (via audiotap)
     echo.py             # removes the speaker echo of system audio from the mic
-    transcribe.py       # WAV -> text (faster-whisper, local)
+    transcribe.py       # WAV -> text (mlx-whisper on the Apple GPU, local)
+    diarize.py          # who-said-what (pyannote, local)
     store.py            # text -> markdown conversation file
     index.py            # markdown -> embeddings in LanceDB
-    ingest.py           # orchestrates transcribe -> store -> index
+    ingest.py           # orchestrates transcribe -> diarize -> store -> index
+    distill.py          # transcript -> summary + topic notes, via `claude -p`
+    prune.py            # expires audio once it's transcribed, diarized and distilled
     search.py           # result formatting
   bin/
     record              # CLI: record until Ctrl-C, then transcribe+store+index
     ingest              # CLI: (re)ingest an existing WAV
+    rediarize           # CLI: recover speaker labels on recordings saved without them
+    reindex             # CLI: rebuild the search index
     search              # CLI: semantic search
     menubar             # launch the macOS menubar app
-  menubar/app.py        # rumps menubar app (start/stop, People picker)
+  menubar/app.py        # rumps menubar app (start/stop); runs ingest as a child process
   audiotap/             # Swift helper: mic + system audio, follows device changes (build.sh)
   mcp_server.py         # MCP server exposing search to Claude
   conversations/        # one .md per conversation  (your brain)
@@ -88,8 +93,9 @@ Then:
 ```bash
 ./.venv/bin/python bin/menubar
 ```
-Click 🧠 → **Start Recording** (icon turns 🔴 with a timer) → tick who's in the room under
-**People** → **Stop Recording** → type a title → it transcribes + indexes in the background.
+Click **2B** → **Start Recording** (the title becomes a `REC` timer) → **Stop Recording** → it
+transcribes, diarizes and indexes in the background. The distill job then titles and summarizes
+it within 15 minutes.
 
 **CLI (fallback):**
 ```bash
@@ -119,17 +125,35 @@ Claude then has these tools: `search_conversations`, `get_conversation`,
 ## Configuration
 
 Edit `config.yaml`:
-- `whisper.model` — `tiny`/`base`/`small`/`medium`/`large-v3` (accuracy vs speed). Default `medium`.
+- `whisper.model` — `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` (accuracy vs speed). Default `large-v3-turbo`.
 - `embeddings.model` — fastembed model id. Default `BAAI/bge-small-en-v1.5`.
 - `embeddings.chunk_size` / `chunk_overlap` — retrieval granularity.
 
-## Deferred / future (seams already in place)
+## Memory
 
-- **Speaker diarization** (`pyannote.audio`) — split transcript into Speaker A/B/C turns.
+The menu bar app runs for weeks and holds the only copy of a recording in progress, so it stays
+small (~50 MB idle, plus ~800 MB per hour while recording) and never loads a model. Ingest runs as
+a child process (`bin/ingest`), peaks at several GB, and gives all of it back when it exits. Only
+one ingest runs at a time. To check a process, use `footprint -p <pid>` or
+`top -stats pid,mem,cmprs`: `ps` RSS hides GPU and compressed memory.
+
+## When something breaks
+
+Failures reach you as an alert (ingest, no speaker labels) or a notification at most once a day
+(distill). Logs: `menubar.log`, `distill.log`, `prune.log`.
+
+- **Recordings saved without speaker labels:** fix the cause, then `bin/rediarize` lists them and
+  `--apply` redoes them. Their audio is kept until then.
+- **Distill failing:** `bin/distill` from a shell shows the error. Under launchd, `claude` is found
+  by searching nvm; set `distill.claude_bin` in `config.yaml` to pin it.
+
+## Deferred / future
+
 - **Voice ID** (`speechbrain`) — auto-label turns with real names from enrolled voiceprints.
-- **Auto-summaries / action items** — currently raw transcripts; Claude summarizes on demand.
 
 ## Privacy
 
-Everything runs locally. Audio and transcripts never leave your machine. You're in a
-one-party-consent state, but a courtesy heads-up to colleagues is polite.
+Audio, transcription, diarization and search all run locally. Distillation sends each transcript
+to Claude through the `claude` CLI on your subscription; unload the
+`com.terran.secondbrain.distill` agent if you don't want that. You're in a one-party-consent state,
+but a courtesy heads-up to colleagues is polite.
